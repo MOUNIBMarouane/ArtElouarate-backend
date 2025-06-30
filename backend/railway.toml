@@ -1,0 +1,10 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+startCommand = "npm start"
+
+[env]
+NODE_ENV = "production" 

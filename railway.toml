@@ -1,0 +1,43 @@
+[build]
+# Build command - install dependencies
+buildCommand = "npm install"
+
+[deploy]
+# Start command - run your server
+startCommand = "npm start"
+# Health check endpoint
+healthcheckPath = "/api/health"
+# Health check timeout
+healthcheckTimeout = 30
+# Restart policy
+restartPolicyType = "ON_FAILURE"
+# Restart policy max retries
+restartPolicyMaxRetries = 3
+
+[environment]
+# Node.js version
+NODE_VERSION = "18"
+# Environment
+NODE_ENV = "production"
+# Port (Railway will set this automatically)
+PORT = "3000"
+
+[networking]
+# Public domain settings
+serviceDomain = "elouarate-art-api"
+
+[scaling]
+# Minimum instances
+minReplicas = 1
+# Maximum instances  
+maxReplicas = 3
+# CPU target for scaling
+targetCPUPercent = 80
+# Memory target for scaling
+targetMemoryPercent = 80
+
+[observability]
+# Enable logging
+enableLogging = true
+# Enable metrics
+enableMetrics = true
