@@ -1,8 +1,19 @@
 {
-  "name": "storepint",
-  "version": "1.0.0",
-  "private": true,
-  "workspaces": [
-    "frontend-nextjs"
-  ]
+  "name": "elouarate-art-backend",
+  "version": "2.0.0",
+  "description": "ELOUARATE ART Backend API",
+  "main": "backend/server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "scripts": {
+    "start": "cd backend && node server.js",
+    "dev": "cd backend && node server.js",
+    "build": "cd backend && npm install",
+    "railway:start": "cd backend && node server.js",
+    "railway:build": "npm install && cd backend && npm install"
+  },
+  "private": true
 }

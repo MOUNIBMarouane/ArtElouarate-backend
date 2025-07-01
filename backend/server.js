@@ -64,20 +64,50 @@ app.use(helmet({
 app.use(compression(performance.compressionConfig));
 app.use(morgan('combined'));
 
-// CORS configuration
+// CORS configuration - Dynamic for Railway deployment
+const corsOrigins = [
+  // Local development
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  // Production domains
+  process.env.FRONTEND_URL,
+  // Railway domains (dynamic)
+  ...(process.env.NODE_ENV === 'production' ? [
+    /^https:\/\/.*\.railway\.app$/,
+    /^https:\/\/.*\.up\.railway\.app$/
+  ] : []),
+  // Additional domains
+  'https://*.vercel.app'
+].filter(Boolean);
+
 app.use(cors({
-  origin: [
-    'https://artelouarrate-frontend-production.up.railway.app',
-    'http://localhost:8080',
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://*.vercel.app',
-    'https://*.railway.app',
-    process.env.FRONTEND_URL
-  ].filter(Boolean),
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Check against allowed origins
+    const isAllowed = corsOrigins.some(allowedOrigin => {
+      if (typeof allowedOrigin === 'string') {
+        return allowedOrigin === origin || allowedOrigin.includes('*');
+      }
+      if (allowedOrigin instanceof RegExp) {
+        return allowedOrigin.test(origin);
+      }
+      return false;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200
 }));
 
 // Advanced Security Middleware

@@ -41,8 +41,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.5.5",
-    "nodemon": "^3.1.4",
-    "prisma": "^5.22.0"
+    "nodemon": "^3.1.4"
   },
   "keywords": [
     "art",

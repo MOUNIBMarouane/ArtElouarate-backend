@@ -1,7 +1,14 @@
 import express from 'express';
-import prisma from '../lib/db.js';
+import pg from 'pg';
 
+const { Pool } = pg;
 const router = express.Router();
+
+// Database connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || process.env.POSTGRES_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+});
 
 // Generate XML sitemap
 router.get('/sitemap.xml', async (req, res) => {
@@ -9,28 +16,24 @@ router.get('/sitemap.xml', async (req, res) => {
     const baseUrl = process.env.FRONTEND_URL || 'https://elouarateart.com';
     
     // Get all active artworks
-    const artworks = await prisma.artwork.findMany({
-      where: {
-        isActive: true,
-        status: 'AVAILABLE'
-      },
-      include: {
-        category: true
-      },
-      orderBy: {
-        updatedAt: 'desc'
-      }
-    });
+    const artworksResult = await pool.query(`
+      SELECT a.id, a.name, a.description, a."updatedAt", 
+             c.name as category_name
+      FROM artworks a
+      LEFT JOIN categories c ON a."categoryId" = c.id
+      WHERE a."isActive" = true AND a.status = 'AVAILABLE'
+      ORDER BY a."updatedAt" DESC
+    `);
+    const artworks = artworksResult.rows;
 
     // Get all active categories
-    const categories = await prisma.category.findMany({
-      where: {
-        isActive: true
-      },
-      orderBy: {
-        name: 'asc'
-      }
-    });
+    const categoriesResult = await pool.query(`
+      SELECT id, name, "updatedAt"
+      FROM categories
+      WHERE "isActive" = true
+      ORDER BY name ASC
+    `);
+    const categories = categoriesResult.rows;
 
     // Static pages
     const staticPages = [
@@ -59,7 +62,7 @@ router.get('/sitemap.xml', async (req, res) => {
 
     // Add category pages
     for (const category of categories) {
-      const lastmod = category.updatedAt.toISOString().split('T')[0];
+      const lastmod = new Date(category.updatedAt).toISOString().split('T')[0];
       const categoryUrl = `/category/${encodeURIComponent(category.name.toLowerCase().replace(/\s+/g, '-'))}`;
       
       sitemap += `  <url>
@@ -73,28 +76,14 @@ router.get('/sitemap.xml', async (req, res) => {
 
     // Add artwork pages
     for (const artwork of artworks) {
-      const lastmod = artwork.updatedAt.toISOString().split('T')[0];
+      const lastmod = new Date(artwork.updatedAt).toISOString().split('T')[0];
       const artworkUrl = `/artwork/${artwork.id}`;
       
       sitemap += `  <url>
     <loc>${baseUrl}${artworkUrl}</loc>
     <lastmod>${lastmod}</lastmod>
     <changefreq>monthly</changefreq>
-    <priority>0.6</priority>`;
-
-      // Add image information if available
-      if (artwork.images && artwork.images.length > 0) {
-        for (const image of artwork.images) {
-          sitemap += `
-    <image:image>
-      <image:loc>${baseUrl}${image.url}</image:loc>
-      <image:title>${artwork.name}</image:title>
-      <image:caption>${artwork.description}</image:caption>
-    </image:image>`;
-        }
-      }
-
-      sitemap += `
+    <priority>0.6</priority>
   </url>
 `;
     }

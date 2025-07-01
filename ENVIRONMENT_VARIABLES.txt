@@ -1,0 +1,26 @@
+# Railway Environment Variables - Copy these to Railway Dashboard
+
+NODE_ENV=production
+PORT=3000
+JWT_SECRET=8e0c11473be8ddd9a5c54eff359d92d7c76a01269e3baee117971d4a15dc843c
+SESSION_SECRET=2c5f2d72d6c3a1307f66d70dc6d93a4a35eb5c3e1e1d75b652ebb7cd38521d6f
+ADMIN_EMAIL=admin@elouarate.com
+ADMIN_PASSWORD=Admin123!
+ADMIN_FIRST_NAME=Admin
+ADMIN_LAST_NAME=User
+
+# These will be auto-linked by Railway:
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+POSTGRES_URL=${{Postgres.POSTGRES_URL}}
+FRONTEND_URL=${{ArtElouarrate-frontend.RAILWAY_PUBLIC_DOMAIN}}
+
+# Instructions:
+# 1. Copy each line above (without the #)
+# 2. Go to Railway Dashboard → prolific-charm → Backend Service → Variables
+# 3. Add each variable one by one
+# 4. Save and redeploy
+
+# Security Note:
+# - JWT_SECRET: Used for JSON Web Token signing
+# - SESSION_SECRET: Used for session encryption
+# - Both are cryptographically secure 64-character hex strings 
