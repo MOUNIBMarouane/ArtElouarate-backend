@@ -20,6 +20,9 @@ import { fileURLToPath } from 'url';
 import security from './middleware/security.js';
 import performance from './middleware/performance.js';
 import monitoring from './lib/monitoring.js';
+// Optional route imports
+// import adminRoutes from './routes/admin.js';
+import sitemapRoutes from './routes/sitemap.js';
 
 const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
@@ -132,6 +135,72 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // =============================================================================
+// ROUTES SETUP
+// =============================================================================
+
+// Simple admin login endpoint (fallback)
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json(createResponse(false, null, '', 'Email and password required'));
+    }
+
+    // Get admin from database
+    const adminResult = await query(
+      'SELECT id, email, password, "firstName", "lastName", "isActive" FROM admins WHERE email = $1',
+      [email]
+    );
+
+    if (adminResult.rows.length === 0) {
+      return res.status(401).json(createResponse(false, null, '', 'Invalid credentials'));
+    }
+
+    const admin = adminResult.rows[0];
+    
+    if (!admin.isActive) {
+      return res.status(401).json(createResponse(false, null, '', 'Account is disabled'));
+    }
+
+    // Verify password
+    const isValidPassword = await bcryptjs.compare(password, admin.password);
+    
+    if (!isValidPassword) {
+      return res.status(401).json(createResponse(false, null, '', 'Invalid credentials'));
+    }
+
+    // Generate token
+    const token = generateToken({ 
+      userId: admin.id, 
+      email: admin.email, 
+      role: 'admin' 
+    });
+
+    // Return success response
+    res.json(createResponse(true, {
+      token,
+      admin: {
+        id: admin.id,
+        email: admin.email,
+        firstName: admin.firstName,
+        lastName: admin.lastName
+      }
+    }, 'Login successful'));
+
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json(createResponse(false, null, '', 'Login failed'));
+  }
+});
+
+// Mount admin routes (main login endpoint is above)
+// app.use('/api/admin', adminRoutes);
+
+// Mount sitemap routes  
+app.use('/', sitemapRoutes);
+
+// =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
 
@@ -197,6 +266,50 @@ const authenticate = async (req, res, next) => {
   } catch (error) {
     console.error('Authentication error:', error);
     res.status(401).json(createResponse(false, null, '', 'Invalid or expired token'));
+  }
+};
+
+// Admin user initialization
+const createInitialAdmin = async () => {
+  try {
+    // Check if admin table exists, if not create it
+    await query(`
+      CREATE TABLE IF NOT EXISTS admins (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        "firstName" VARCHAR(100) NOT NULL,
+        "lastName" VARCHAR(100) NOT NULL,
+        role VARCHAR(50) DEFAULT 'admin',
+        "isActive" BOOLEAN DEFAULT true,
+        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Check if any admin exists
+    const adminCheck = await query('SELECT COUNT(*) as count FROM admins');
+    const adminCount = parseInt(adminCheck.rows[0].count);
+
+    if (adminCount === 0) {
+      // Create default admin user
+      const defaultEmail = process.env.ADMIN_EMAIL || 'admin@elouarate.com';
+      const defaultPassword = process.env.ADMIN_PASSWORD || 'Admin123!';
+      const hashedPassword = await bcryptjs.hash(defaultPassword, 12);
+
+      await query(`
+        INSERT INTO admins (email, password, "firstName", "lastName")
+        VALUES ($1, $2, $3, $4)
+      `, [defaultEmail, hashedPassword, 'Admin', 'User']);
+
+      console.log('✅ Default admin user created');
+      console.log(`📧 Email: ${defaultEmail}`);
+      console.log(`🔒 Password: ${defaultPassword}`);
+    } else {
+      console.log('✅ Admin user already exists');
+    }
+  } catch (error) {
+    console.error('❌ Error creating admin user:', error);
   }
 };
 
@@ -640,6 +753,9 @@ const startServer = async () => {
     // Test database connection on startup
     await query('SELECT 1');
     console.log('✅ Database connection verified');
+    
+    // Create initial admin user if it doesn't exist
+    await createInitialAdmin();
     
     // Initialize monitoring system
     monitoring.initializeMonitoring(query);
