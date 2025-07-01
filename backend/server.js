@@ -149,7 +149,7 @@ app.post('/api/admin/login', async (req, res) => {
 
     // Get admin from database
     const adminResult = await query(
-      'SELECT id, email, password, "firstName", "lastName", "isActive" FROM admins WHERE email = $1',
+      'SELECT id, email, password, username, "isActive" FROM admins WHERE email = $1',
       [email]
     );
 
@@ -177,20 +177,124 @@ app.post('/api/admin/login', async (req, res) => {
       role: 'admin' 
     });
 
-    // Return success response
-    res.json(createResponse(true, {
-      token,
-      admin: {
-        id: admin.id,
-        email: admin.email,
-        firstName: admin.firstName,
-        lastName: admin.lastName
+    // Return success response with proper structure for frontend
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        accessToken: token,
+        refreshToken: token, // For now, use same token
+        admin: {
+          id: admin.id,
+          email: admin.email,
+          username: admin.username
+        }
       }
-    }, 'Login successful'));
+    });
 
   } catch (error) {
     console.error('Admin login error:', error);
     res.status(500).json(createResponse(false, null, '', 'Login failed'));
+  }
+});
+
+// Admin forgot password endpoint
+app.post('/api/admin/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json(createResponse(false, null, '', 'Email is required'));
+    }
+
+    // Check if admin exists
+    const adminResult = await query(
+      'SELECT id, email, username FROM admins WHERE email = $1',
+      [email]
+    );
+
+    if (adminResult.rows.length === 0) {
+      // Don't reveal if email exists or not for security
+      return res.json(createResponse(true, null, 'If an account with that email exists, a reset link has been sent.'));
+    }
+
+    const admin = adminResult.rows[0];
+    
+    // Generate reset token (simple implementation - in production use crypto.randomBytes)
+    const resetToken = jwt.sign(
+      { userId: admin.id, email: admin.email, type: 'password_reset' },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    // Store reset token in database
+    await query(
+      'UPDATE admins SET "passwordResetToken" = $1, "updatedAt" = CURRENT_TIMESTAMP WHERE id = $2',
+      [resetToken, admin.id]
+    );
+
+    // In a real app, you would send an email here
+    // For now, we'll just log the reset link
+    console.log(`🔗 Password reset link for ${email}:`);
+    console.log(`   Token: ${resetToken}`);
+    console.log(`   Use this in the reset password form`);
+
+    res.json(createResponse(true, null, 'If an account with that email exists, a reset link has been sent.'));
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to process password reset request'));
+  }
+});
+
+// Admin reset password endpoint
+app.post('/api/admin/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    
+    if (!token || !newPassword) {
+      return res.status(400).json(createResponse(false, null, '', 'Token and new password are required'));
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json(createResponse(false, null, '', 'Password must be at least 8 characters long'));
+    }
+
+    // Verify reset token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.type !== 'password_reset') {
+        throw new Error('Invalid token type');
+      }
+    } catch (error) {
+      return res.status(400).json(createResponse(false, null, '', 'Invalid or expired reset token'));
+    }
+
+    // Find admin with this reset token
+    const adminResult = await query(
+      'SELECT id, email FROM admins WHERE id = $1 AND "passwordResetToken" = $2',
+      [decoded.userId, token]
+    );
+
+    if (adminResult.rows.length === 0) {
+      return res.status(400).json(createResponse(false, null, '', 'Invalid or expired reset token'));
+    }
+
+    // Hash new password
+    const hashedPassword = await bcryptjs.hash(newPassword, 12);
+
+    // Update password and clear reset token
+    await query(
+      'UPDATE admins SET password = $1, "passwordResetToken" = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE id = $2',
+      [hashedPassword, decoded.userId]
+    );
+
+    res.json(createResponse(true, null, 'Password has been reset successfully. You can now login with your new password.'));
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to reset password'));
   }
 });
 
@@ -269,19 +373,23 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-// Admin user initialization
+// Admin user initialization - Updated to match existing table structure
 const createInitialAdmin = async () => {
   try {
-    // Check if admin table exists, if not create it
+    // Check if admin table exists, if not create it with correct structure
     await query(`
       CREATE TABLE IF NOT EXISTS admins (
-        id SERIAL PRIMARY KEY,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        "firstName" VARCHAR(100) NOT NULL,
-        "lastName" VARCHAR(100) NOT NULL,
-        role VARCHAR(50) DEFAULT 'admin',
+        id TEXT PRIMARY KEY DEFAULT ('adm_' || substr(md5(random()::text), 1, 12)),
+        username TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
         "isActive" BOOLEAN DEFAULT true,
+        "isSuperAdmin" BOOLEAN DEFAULT false,
+        permissions TEXT DEFAULT 'admin',
+        "lastLogin" TIMESTAMP,
+        "loginAttempts" INTEGER DEFAULT 0,
+        "lockoutUntil" TIMESTAMP,
+        "passwordResetToken" TEXT,
         "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         "updatedAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
@@ -296,20 +404,23 @@ const createInitialAdmin = async () => {
       const defaultEmail = process.env.ADMIN_EMAIL || 'admin@elouarate.com';
       const defaultPassword = process.env.ADMIN_PASSWORD || 'Admin123!';
       const hashedPassword = await bcryptjs.hash(defaultPassword, 12);
+      const adminId = 'adm_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
 
       await query(`
-        INSERT INTO admins (email, password, "firstName", "lastName")
-        VALUES ($1, $2, $3, $4)
-      `, [defaultEmail, hashedPassword, 'Admin', 'User']);
+        INSERT INTO admins (id, username, email, password, "isActive", "isSuperAdmin", permissions)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `, [adminId, 'admin', defaultEmail, hashedPassword, true, true, 'admin']);
 
       console.log('✅ Default admin user created');
       console.log(`📧 Email: ${defaultEmail}`);
       console.log(`🔒 Password: ${defaultPassword}`);
+      console.log(`👤 Username: admin`);
     } else {
       console.log('✅ Admin user already exists');
     }
   } catch (error) {
     console.error('❌ Error creating admin user:', error);
+    // Don't throw error - let the server continue
   }
 };
 
