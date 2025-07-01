@@ -2,9 +2,11 @@
 builder = "NIXPACKS"
 
 [deploy]
-healthcheckPath = "/api/health"
-healthcheckTimeout = 300
 startCommand = "npm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
 
 [env]
-NODE_ENV = "production" 
+NODE_ENV = "production"
+PORT = "$PORT" 
