@@ -17,6 +17,8 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import multer from 'multer';
+import fs from 'fs';
 import security from './middleware/security.js';
 import performance from './middleware/performance.js';
 import monitoring from './lib/monitoring.js';
@@ -133,6 +135,51 @@ const authLimiter = rateLimit({
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// =============================================================================
+// FILE UPLOAD CONFIGURATION
+// =============================================================================
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('✅ Created uploads directory');
+}
+
+// Multer configuration for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const extension = path.extname(file.originalname);
+    cb(null, `image-${uniqueSuffix}${extension}`);
+  }
+});
+
+// File filter for images only
+const fileFilter = (req, file, cb) => {
+  const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+  if (allowedMimes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files (JPEG, PNG, GIF, WebP) are allowed'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: fileFilter
+});
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(uploadsDir));
 
 // =============================================================================
 // ROUTES SETUP
@@ -614,20 +661,250 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // CATEGORIES ENDPOINTS
 // =============================================================================
 
-// Get all categories
-app.get('/api/categories', performance.categoriesCache, async (req, res) => {
+// Cache management
+const cache = {
+  categories: {
+    data: null,
+    lastFetched: null,
+    ttl: 5 * 60 * 1000, // 5 minutes cache TTL
+  },
+  artworks: {
+    data: null,
+    lastFetched: null,
+    ttl: 2 * 60 * 1000, // 2 minutes cache TTL
+  }
+};
+
+// Helper to check if cache is valid
+const isCacheValid = (cacheKey) => {
+  return cache[cacheKey].data !== null && 
+         cache[cacheKey].lastFetched !== null && 
+         (Date.now() - cache[cacheKey].lastFetched) < cache[cacheKey].ttl;
+};
+
+// Helper to invalidate specific cache
+const invalidateCache = (cacheKey) => {
+  if (cache[cacheKey]) {
+    cache[cacheKey].data = null;
+    cache[cacheKey].lastFetched = null;
+    console.log(`🧹 Cache invalidated: ${cacheKey}`);
+  }
+};
+
+// Get all categories (with performance optimization)
+app.get('/api/categories', async (req, res) => {
   try {
-    const result = await query(`
-      SELECT id, name, description, color, "isActive", "sortOrder", "createdAt"
-      FROM categories 
-      WHERE "isActive" = true 
-      ORDER BY "sortOrder" ASC, name ASC
+    // Check cache first
+    if (isCacheValid('categories')) {
+      console.log('🚀 Serving categories from cache');
+      return res.json(createResponse(true, cache.categories.data, 'Categories retrieved from cache'));
+    }
+    
+    // If not cached, fetch from database
+    console.log('🔍 Fetching categories from database');
+    const categoriesResult = await query(`
+      SELECT 
+        c.id, c.name, c.description, c.color, 
+        c."isActive", c."sortOrder", 
+        c."createdAt", c."updatedAt",
+        COUNT(a.id) AS "artworkCount"
+      FROM categories c
+      LEFT JOIN artworks a ON c.id = a."categoryId"
+      GROUP BY c.id
+      ORDER BY c."sortOrder", c.name
     `);
 
-    res.json(createResponse(true, result.rows, 'Categories retrieved successfully'));
+    const categories = categoriesResult.rows;
+    
+    // Update cache
+    cache.categories.data = categories;
+    cache.categories.lastFetched = Date.now();
+    
+    res.json(createResponse(true, categories, 'Categories retrieved successfully'));
   } catch (error) {
-    console.error('Get categories error:', error);
-    res.status(500).json(createResponse(false, null, '', 'Failed to get categories'));
+    console.error('Error getting categories:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to retrieve categories'));
+  }
+});
+
+// Get category by ID
+app.get('/api/categories/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const categoryResult = await query(`
+      SELECT 
+        c.id, c.name, c.description, c.color, 
+        c."isActive", c."sortOrder", 
+        c."createdAt", c."updatedAt",
+        COUNT(a.id) AS "artworkCount"
+      FROM categories c
+      LEFT JOIN artworks a ON c.id = a."categoryId"
+      WHERE c.id = $1
+      GROUP BY c.id
+    `, [id]);
+
+    if (categoryResult.rows.length === 0) {
+      return res.status(404).json(createResponse(false, null, '', 'Category not found'));
+    }
+
+    const category = categoryResult.rows[0];
+    
+    // Get artworks in this category
+    const artworksResult = await query(`
+      SELECT * FROM artworks WHERE "categoryId" = $1 AND "isActive" = true
+      ORDER BY "createdAt" DESC
+    `, [id]);
+    
+    category.artworks = artworksResult.rows;
+    
+    res.json(createResponse(true, category, 'Category retrieved successfully'));
+  } catch (error) {
+    console.error('Error getting category:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to retrieve category'));
+  }
+});
+
+// Create category with validation
+app.post('/api/categories', authenticate, [
+  body('name').trim().isLength({ min: 2, max: 50 }).withMessage('Name must be between 2-50 characters'),
+  body('description').trim().isLength({ min: 5 }).withMessage('Description must be at least 5 characters'),
+  body('color').trim().isHexColor().withMessage('Color must be a valid hex color')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json(createResponse(false, null, '', errors.array()[0].msg));
+    }
+    
+    const { name, description, color } = req.body;
+    
+    // Check if category with same name already exists
+    const existingCategory = await query('SELECT id FROM categories WHERE name = $1', [name]);
+    if (existingCategory.rows.length > 0) {
+      return res.status(400).json(createResponse(false, null, '', 'Category with this name already exists'));
+    }
+    
+    // Create category
+    const result = await query(
+      `INSERT INTO categories (name, description, color, "isActive", "sortOrder")
+       VALUES ($1, $2, $3, true, 0)
+       RETURNING id, name, description, color, "isActive", "sortOrder", "createdAt", "updatedAt"`,
+      [name, description, color]
+    );
+    
+    const newCategory = result.rows[0];
+    
+    // Invalidate categories cache
+    invalidateCache('categories');
+    
+    res.status(201).json(createResponse(true, newCategory, 'Category created successfully'));
+  } catch (error) {
+    console.error('Error creating category:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to create category'));
+  }
+});
+
+// Update category with validation
+app.put('/api/categories/:id', authenticate, [
+  body('name').trim().optional().isLength({ min: 2, max: 50 }).withMessage('Name must be between 2-50 characters'),
+  body('description').trim().optional().isLength({ min: 5 }).withMessage('Description must be at least 5 characters'),
+  body('color').trim().optional().isHexColor().withMessage('Color must be a valid hex color')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json(createResponse(false, null, '', errors.array()[0].msg));
+    }
+    
+    const { id } = req.params;
+    const { name, description, color } = req.body;
+    
+    // Check if category exists
+    const existingResult = await query('SELECT id FROM categories WHERE id = $1', [id]);
+    if (existingResult.rows.length === 0) {
+      return res.status(404).json(createResponse(false, null, '', 'Category not found'));
+    }
+    
+    // Check if name already exists (for another category)
+    if (name) {
+      const duplicateResult = await query('SELECT id FROM categories WHERE name = $1 AND id <> $2', [name, id]);
+      if (duplicateResult.rows.length > 0) {
+        return res.status(400).json(createResponse(false, null, '', 'Another category with this name already exists'));
+      }
+    }
+    
+    // Build dynamic update query
+    let updateFields = [];
+    let values = [];
+    let paramCount = 1;
+    
+    if (name !== undefined) {
+      updateFields.push(`name = $${paramCount++}`);
+      values.push(name);
+    }
+    
+    if (description !== undefined) {
+      updateFields.push(`description = $${paramCount++}`);
+      values.push(description);
+    }
+    
+    if (color !== undefined) {
+      updateFields.push(`color = $${paramCount++}`);
+      values.push(color);
+    }
+    
+    updateFields.push(`"updatedAt" = CURRENT_TIMESTAMP`);
+    values.push(id);
+    
+    // Update category
+    const result = await query(
+      `UPDATE categories SET ${updateFields.join(', ')} WHERE id = $${paramCount}
+       RETURNING id, name, description, color, "isActive", "sortOrder", "createdAt", "updatedAt"`,
+      values
+    );
+    
+    const updatedCategory = result.rows[0];
+    
+    // Invalidate categories cache
+    invalidateCache('categories');
+    
+    res.json(createResponse(true, updatedCategory, 'Category updated successfully'));
+  } catch (error) {
+    console.error('Error updating category:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to update category'));
+  }
+});
+
+// Delete category with checks for dependent artworks
+app.delete('/api/categories/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if category has artworks
+    const artworksResult = await query('SELECT COUNT(*) FROM artworks WHERE "categoryId" = $1', [id]);
+    const artworkCount = parseInt(artworksResult.rows[0].count, 10);
+    
+    if (artworkCount > 0) {
+      return res.status(400).json(createResponse(false, null, '', `Category has ${artworkCount} artworks. Please move or delete them first.`));
+    }
+    
+    // Delete category
+    const result = await query('DELETE FROM categories WHERE id = $1 RETURNING id', [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json(createResponse(false, null, '', 'Category not found'));
+    }
+    
+    // Invalidate categories cache
+    invalidateCache('categories');
+    
+    res.json(createResponse(true, { id }, 'Category deleted successfully'));
+  } catch (error) {
+    console.error('Error deleting category:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to delete category'));
   }
 });
 
@@ -635,105 +912,568 @@ app.get('/api/categories', performance.categoriesCache, async (req, res) => {
 // ARTWORKS ENDPOINTS  
 // =============================================================================
 
-// Get all artworks
-app.get('/api/artworks', performance.artworksCache, async (req, res) => {
-    try {
-    const { page = 1, limit = 12, category, search, minPrice, maxPrice } = req.query;
+// Get all artworks (paginated and optimized)
+app.get('/api/artworks', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 12;
     const offset = (page - 1) * limit;
-
-    let whereClause = 'WHERE a."isActive" = true';
-    let params = [];
-    let paramCount = 0;
-
-    // Add filters
-    if (category) {
-      paramCount++;
-      whereClause += ` AND a."categoryId" = $${paramCount}`;
-      params.push(category);
+    const search = req.query.search || '';
+    const category = req.query.category || '';
+    
+    // Only use cache for default no-filter requests
+    if (!search && !category && page === 1 && limit === 12 && isCacheValid('artworks')) {
+      console.log('🚀 Serving artworks from cache');
+      return res.json(createResponse(true, cache.artworks.data, 'Artworks retrieved from cache'));
     }
-
-    if (search) {
-      paramCount++;
-      whereClause += ` AND (a.name ILIKE $${paramCount} OR a.description ILIKE $${paramCount})`;
-      params.push(`%${search}%`);
-    }
-
-    if (minPrice) {
-      paramCount++;
-      whereClause += ` AND a.price >= $${paramCount}`;
-      params.push(parseFloat(minPrice));
-    }
-
-    if (maxPrice) {
-      paramCount++;
-      whereClause += ` AND a.price <= $${paramCount}`;
-      params.push(parseFloat(maxPrice));
-    }
-
-    const query_text = `
+    
+    // Build query with filters
+    let queryText = `
       SELECT 
-        a.id, a.name, a.description, a.price, a."originalPrice",
-        a.dimensions, a.medium, a.year, a."isActive", a."createdAt",
-        c.name as "categoryName", c.color as "categoryColor"
+        a.id, a.name, a.description, a.price, a."originalPrice", 
+        a.medium, a.dimensions, a.year, a.status, a."isActive", a."isFeatured",
+        a."viewCount", a."categoryId", a."createdAt", a."updatedAt",
+        c.name as "categoryName", c.color as "categoryColor",
+        (SELECT json_agg(json_build_object(
+          'id', ai.id,
+          'filename', ai.filename,
+          'originalName', ai."originalName",
+          'mimeType', ai."mimeType",
+          'size', ai.size,
+          'url', ai.url,
+          'isPrimary', ai."isPrimary",
+          'artworkId', ai."artworkId",
+          'createdAt', ai."createdAt"
+        ))
+        FROM artwork_images ai 
+        WHERE ai."artworkId" = a.id
+        ) as "images"
       FROM artworks a
       LEFT JOIN categories c ON a."categoryId" = c.id
-      ${whereClause}
-      ORDER BY a."createdAt" DESC
-      LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
+      WHERE 1=1
     `;
-
-    params.push(parseInt(limit), offset);
-
-    const result = await query(query_text, params);
-
-    // Get total count for pagination
-    const countQuery = `
-      SELECT COUNT(*) as total
-      FROM artworks a
-      ${whereClause}
-    `;
-    const countResult = await query(countQuery, params.slice(0, paramCount));
-    const total = parseInt(countResult.rows[0].total);
-
+    
+    const queryParams = [];
+    
+    // Add search filter
+    if (search) {
+      queryParams.push(`%${search}%`);
+      queryText += ` AND (a.name ILIKE $${queryParams.length} OR a.description ILIKE $${queryParams.length})`;
+    }
+    
+    // Add category filter
+    if (category) {
+      queryParams.push(category);
+      queryText += ` AND a."categoryId" = $${queryParams.length}`;
+    }
+    
+    // Add order and pagination
+    queryText += ` ORDER BY a."updatedAt" DESC LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
+    queryParams.push(limit, offset);
+    
+    // Count total (for pagination)
+    let countText = `SELECT COUNT(*) FROM artworks a WHERE 1=1`;
+    const countParams = [];
+    
+    if (search) {
+      countParams.push(`%${search}%`);
+      countText += ` AND (a.name ILIKE $${countParams.length} OR a.description ILIKE $${countParams.length})`;
+    }
+    
+    if (category) {
+      countParams.push(category);
+      countText += ` AND a."categoryId" = $${countParams.length}`;
+    }
+    
+    // Execute queries with Promise.all for performance
+    const [artworksResult, countResult] = await Promise.all([
+      query(queryText, queryParams),
+      query(countText, countParams)
+    ]);
+    
+    const artworks = artworksResult.rows;
+    const total = parseInt(countResult.rows[0].count, 10);
+    const totalPages = Math.ceil(total / limit);
+    
+    // Only cache default queries
+    if (!search && !category && page === 1 && limit === 12) {
+      cache.artworks.data = {
+        artworks,
+        pagination: { page, limit, total, totalPages }
+      };
+      cache.artworks.lastFetched = Date.now();
+    }
+    
     res.json(createResponse(true, {
-      artworks: result.rows,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / limit)
-      }
+      artworks,
+      pagination: { page, limit, total, totalPages }
     }, 'Artworks retrieved successfully'));
-
   } catch (error) {
-    console.error('Get artworks error:', error);
-    res.status(500).json(createResponse(false, null, '', 'Failed to get artworks'));
+    console.error('Error getting artworks:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to retrieve artworks'));
   }
 });
 
-// Get single artwork
+// Get artwork by ID
 app.get('/api/artworks/:id', async (req, res) => {
   try {
     const { id } = req.params;
-
-    const result = await query(`
+    
+    // Get artwork with images
+    const artworkResult = await query(`
       SELECT 
-        a.id, a.name, a.description, a.price, a."originalPrice",
-        a.dimensions, a.medium, a.year, a."isActive", a."createdAt",
+        a.id, a.name, a.description, a.price, a."originalPrice", 
+        a.medium, a.dimensions, a.year, a.status, a."isActive", a."isFeatured",
+        a."viewCount", a."categoryId", a."createdAt", a."updatedAt",
         c.name as "categoryName", c.color as "categoryColor"
       FROM artworks a
       LEFT JOIN categories c ON a."categoryId" = c.id
-      WHERE a.id = $1 AND a."isActive" = true
+      WHERE a.id = $1
     `, [id]);
-
-    if (result.rows.length === 0) {
+    
+    if (artworkResult.rows.length === 0) {
       return res.status(404).json(createResponse(false, null, '', 'Artwork not found'));
     }
-
-    res.json(createResponse(true, result.rows[0], 'Artwork retrieved successfully'));
+    
+    const artwork = artworkResult.rows[0];
+    
+    // Get images
+    const imagesResult = await query(`
+      SELECT 
+        id, filename, "originalName", "mimeType", size, url, "isPrimary", "artworkId", "createdAt"
+      FROM artwork_images
+      WHERE "artworkId" = $1
+      ORDER BY "isPrimary" DESC
+    `, [id]);
+    
+    artwork.images = imagesResult.rows;
+    
+    // Update view count (asynchronously)
+    query(`UPDATE artworks SET "viewCount" = "viewCount" + 1 WHERE id = $1`, [id])
+      .catch(err => console.error('Error updating view count:', err));
+    
+    res.json(createResponse(true, artwork, 'Artwork retrieved successfully'));
   } catch (error) {
-    console.error('Get artwork error:', error);
-    res.status(500).json(createResponse(false, null, '', 'Failed to get artwork'));
+    console.error('Error getting artwork:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to retrieve artwork'));
+  }
+});
+
+// Create artwork with validation
+app.post('/api/artworks', authenticate, [
+  body('name').trim().isLength({ min: 2, max: 100 }).withMessage('Name must be between 2-100 characters'),
+  body('description').trim().isLength({ min: 10 }).withMessage('Description must be at least 10 characters'),
+  body('price').isNumeric().withMessage('Price must be a number'),
+  body('originalPrice').optional().isNumeric().withMessage('Original price must be a number'),
+  body('categoryId').isUUID().withMessage('Invalid category ID'),
+  body('medium').trim().isLength({ min: 2 }).withMessage('Medium is required'),
+  body('dimensions').trim().isLength({ min: 2 }).withMessage('Dimensions are required'),
+  body('year').isInt({ min: 1800, max: new Date().getFullYear() }).withMessage('Invalid year'),
+  body('imageUrl').isURL().withMessage('Valid image URL is required')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json(createResponse(false, null, '', errors.array()[0].msg));
+    }
+    
+    const { 
+      name, description, price, originalPrice, categoryId,
+      imageUrl, medium, dimensions, year, status = 'AVAILABLE'
+    } = req.body;
+    
+    // Verify category exists
+    const categoryCheck = await query('SELECT id FROM categories WHERE id = $1', [categoryId]);
+    if (categoryCheck.rows.length === 0) {
+      return res.status(400).json(createResponse(false, null, '', 'Category not found'));
+    }
+    
+    // Create artwork
+    const artworkResult = await query(
+      `INSERT INTO artworks (
+        name, description, price, "originalPrice", "categoryId",
+        medium, dimensions, year, status, "isActive", "isFeatured", "viewCount"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, false, 0)
+      RETURNING *`,
+      [name, description, price, originalPrice || price, categoryId, medium, dimensions, year, status]
+    );
+    
+    const newArtwork = artworkResult.rows[0];
+    
+    // Add image if provided
+    if (imageUrl) {
+      const imageResult = await query(
+        `INSERT INTO artwork_images (
+          filename, "originalName", "mimeType", size, url, "isPrimary", "artworkId"
+        ) VALUES ($1, $2, $3, $4, $5, true, $6)
+        RETURNING *`,
+        [
+          `artwork_${newArtwork.id}_main.jpg`,
+          `${name}.jpg`,
+          'image/jpeg',
+          0, // Size unknown
+          imageUrl,
+          newArtwork.id
+        ]
+      );
+      
+      newArtwork.images = [imageResult.rows[0]];
+    }
+    
+    // Invalidate artworks cache
+    invalidateCache('artworks');
+    
+    res.status(201).json(createResponse(true, newArtwork, 'Artwork created successfully'));
+  } catch (error) {
+    console.error('Error creating artwork:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to create artwork'));
+  }
+});
+
+// Update artwork with validation
+app.put('/api/artworks/:id', authenticate, [
+  body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Name must be between 2-100 characters'),
+  body('description').optional().trim().isLength({ min: 10 }).withMessage('Description must be at least 10 characters'),
+  body('price').optional().isNumeric().withMessage('Price must be a number'),
+  body('originalPrice').optional().isNumeric().withMessage('Original price must be a number'),
+  body('categoryId').optional().isUUID().withMessage('Invalid category ID'),
+  body('medium').optional().trim().isLength({ min: 2 }).withMessage('Medium is required'),
+  body('dimensions').optional().trim().isLength({ min: 2 }).withMessage('Dimensions are required'),
+  body('year').optional().isInt({ min: 1800, max: new Date().getFullYear() }).withMessage('Invalid year'),
+  body('imageUrl').optional().isURL().withMessage('Valid image URL is required')
+], async (req, res) => {
+  try {
+    // Check validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json(createResponse(false, null, '', errors.array()[0].msg));
+    }
+    
+    const { id } = req.params;
+    const updateData = req.body;
+    
+    // Check if artwork exists
+    const existingArtwork = await query('SELECT id FROM artworks WHERE id = $1', [id]);
+    if (existingArtwork.rows.length === 0) {
+      return res.status(404).json(createResponse(false, null, '', 'Artwork not found'));
+    }
+    
+    // If categoryId provided, verify it exists
+    if (updateData.categoryId) {
+      const categoryCheck = await query('SELECT id FROM categories WHERE id = $1', [updateData.categoryId]);
+      if (categoryCheck.rows.length === 0) {
+        return res.status(400).json(createResponse(false, null, '', 'Category not found'));
+      }
+    }
+    
+    // Build dynamic update query
+    const updateFields = [];
+    const values = [];
+    let paramCount = 1;
+    
+    const fieldsToUpdate = [
+      'name', 'description', 'price', 'originalPrice', 'categoryId',
+      'medium', 'dimensions', 'year', 'status', 'isActive', 'isFeatured'
+    ];
+    
+    fieldsToUpdate.forEach(field => {
+      if (updateData[field] !== undefined) {
+        let fieldName = field;
+        if (['categoryId', 'originalPrice', 'isActive', 'isFeatured'].includes(field)) {
+          fieldName = `"${field}"`;
+        }
+        
+        updateFields.push(`${fieldName} = $${paramCount++}`);
+        values.push(updateData[field]);
+      }
+    });
+    
+    // Only proceed if there are fields to update
+    if (updateFields.length === 0) {
+      return res.status(400).json(createResponse(false, null, '', 'No valid fields to update'));
+    }
+    
+    updateFields.push(`"updatedAt" = CURRENT_TIMESTAMP`);
+    values.push(id);
+    
+    // Update artwork
+    const result = await query(
+      `UPDATE artworks SET ${updateFields.join(', ')} WHERE id = $${paramCount}
+       RETURNING *`,
+      values
+    );
+    
+    const updatedArtwork = result.rows[0];
+    
+    // Update image if new one provided
+    if (updateData.imageUrl) {
+      // Check if artwork has images
+      const imagesCheck = await query('SELECT id FROM artwork_images WHERE "artworkId" = $1 AND "isPrimary" = true', [id]);
+      
+      if (imagesCheck.rows.length > 0) {
+        // Update existing primary image
+        await query(
+          `UPDATE artwork_images SET url = $1, "updatedAt" = CURRENT_TIMESTAMP 
+           WHERE id = $2 RETURNING *`,
+          [updateData.imageUrl, imagesCheck.rows[0].id]
+        );
+      } else {
+        // Add new primary image
+        await query(
+          `INSERT INTO artwork_images (
+            filename, "originalName", "mimeType", size, url, "isPrimary", "artworkId"
+          ) VALUES ($1, $2, $3, $4, $5, true, $6)
+          RETURNING *`,
+          [
+            `artwork_${id}_main.jpg`,
+            `${updatedArtwork.name}.jpg`,
+            'image/jpeg',
+            0, // Size unknown
+            updateData.imageUrl,
+            id
+          ]
+        );
+      }
+    }
+    
+    // Get artwork with images for response
+    const artworkResult = await query(`
+      SELECT 
+        a.*, c.name as "categoryName", c.color as "categoryColor",
+        (SELECT json_agg(i.*) FROM artwork_images i WHERE i."artworkId" = a.id) as "images"
+      FROM artworks a
+      LEFT JOIN categories c ON a."categoryId" = c.id
+      WHERE a.id = $1
+    `, [id]);
+    
+    const fullUpdatedArtwork = artworkResult.rows[0];
+    
+    // Invalidate artworks cache
+    invalidateCache('artworks');
+    
+    res.json(createResponse(true, fullUpdatedArtwork, 'Artwork updated successfully'));
+  } catch (error) {
+    console.error('Error updating artwork:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to update artwork'));
+  }
+});
+
+// Delete artwork
+app.delete('/api/artworks/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if artwork exists
+    const existingResult = await query('SELECT id FROM artworks WHERE id = $1', [id]);
+    if (existingResult.rows.length === 0) {
+      return res.status(404).json(createResponse(false, null, '', 'Artwork not found'));
+    }
+    
+    // Start transaction
+    await query('BEGIN');
+    
+    try {
+      // Delete associated images first
+      await query('DELETE FROM artwork_images WHERE "artworkId" = $1', [id]);
+      
+      // Delete artwork
+      await query('DELETE FROM artworks WHERE id = $1', [id]);
+      
+      // Commit transaction
+      await query('COMMIT');
+      
+      // Invalidate artworks cache
+      invalidateCache('artworks');
+      invalidateCache('categories'); // Categories need refresh due to artwork count changes
+      
+      res.json(createResponse(true, { id }, 'Artwork deleted successfully'));
+    } catch (error) {
+      await query('ROLLBACK');
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error deleting artwork:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to delete artwork'));
+  }
+});
+
+// =============================================================================
+// FILE UPLOAD ENDPOINTS
+// =============================================================================
+
+// Upload single image endpoint
+app.post('/api/upload/image', authenticate, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json(createResponse(false, null, '', 'No image file provided'));
+    }
+
+    const { artworkId } = req.body;
+
+    // File info
+    const fileInfo = {
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      url: `/uploads/${req.file.filename}`,
+      isPrimary: true
+    };
+
+    // If artworkId is provided, save to database
+    if (artworkId && artworkId !== 'temp') {
+      const imageResult = await query(
+        `INSERT INTO artwork_images (
+          filename, "originalName", "mimeType", size, url, "isPrimary", "artworkId"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *`,
+        [
+          fileInfo.filename,
+          fileInfo.originalName,
+          fileInfo.mimeType,
+          fileInfo.size,
+          fileInfo.url,
+          fileInfo.isPrimary,
+          artworkId
+        ]
+      );
+
+      // Invalidate artworks cache
+      invalidateCache('artworks');
+
+      res.json(createResponse(true, {
+        ...imageResult.rows[0],
+        publicUrl: `${process.env.BACKEND_URL || ''}${fileInfo.url}`
+      }, 'Image uploaded and saved successfully'));
+    } else {
+      // Return temporary file info for form preview
+      res.json(createResponse(true, {
+        ...fileInfo,
+        publicUrl: `${process.env.BACKEND_URL || ''}${fileInfo.url}`,
+        isTemporary: true
+      }, 'Image uploaded successfully'));
+    }
+  } catch (error) {
+    console.error('Error uploading image:', error);
+    
+    // Clean up uploaded file on error
+    if (req.file) {
+      fs.unlink(req.file.path, (unlinkError) => {
+        if (unlinkError) console.error('Error deleting file:', unlinkError);
+      });
+    }
+    
+    res.status(500).json(createResponse(false, null, '', 'Failed to upload image'));
+  }
+});
+
+// Delete image endpoint
+app.delete('/api/upload/image/:imageId', authenticate, async (req, res) => {
+  try {
+    const { imageId } = req.params;
+
+    // Get image info from database
+    const imageResult = await query(
+      'SELECT * FROM artwork_images WHERE id = $1',
+      [imageId]
+    );
+
+    if (imageResult.rows.length === 0) {
+      return res.status(404).json(createResponse(false, null, '', 'Image not found'));
+    }
+
+    const image = imageResult.rows[0];
+
+    // Delete from database
+    await query('DELETE FROM artwork_images WHERE id = $1', [imageId]);
+
+    // Delete physical file
+    const filePath = path.join(uploadsDir, image.filename);
+    fs.unlink(filePath, (unlinkError) => {
+      if (unlinkError) console.error('Error deleting file:', unlinkError);
+    });
+
+    // Invalidate artworks cache
+    invalidateCache('artworks');
+
+    res.json(createResponse(true, { id: imageId }, 'Image deleted successfully'));
+  } catch (error) {
+    console.error('Error deleting image:', error);
+    res.status(500).json(createResponse(false, null, '', 'Failed to delete image'));
+  }
+});
+
+// Update/replace image endpoint
+app.put('/api/upload/image/:imageId', authenticate, upload.single('image'), async (req, res) => {
+  try {
+    const { imageId } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json(createResponse(false, null, '', 'No image file provided'));
+    }
+
+    // Get existing image info
+    const existingImageResult = await query(
+      'SELECT * FROM artwork_images WHERE id = $1',
+      [imageId]
+    );
+
+    if (existingImageResult.rows.length === 0) {
+      // Clean up uploaded file
+      fs.unlink(req.file.path, (unlinkError) => {
+        if (unlinkError) console.error('Error deleting file:', unlinkError);
+      });
+      return res.status(404).json(createResponse(false, null, '', 'Image not found'));
+    }
+
+    const existingImage = existingImageResult.rows[0];
+
+    // Update image info in database
+    const updatedImageResult = await query(
+      `UPDATE artwork_images SET 
+        filename = $1, 
+        "originalName" = $2, 
+        "mimeType" = $3, 
+        size = $4, 
+        url = $5,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE id = $6
+      RETURNING *`,
+      [
+        req.file.filename,
+        req.file.originalname,
+        req.file.mimetype,
+        req.file.size,
+        `/uploads/${req.file.filename}`,
+        imageId
+      ]
+    );
+
+    // Delete old physical file
+    const oldFilePath = path.join(uploadsDir, existingImage.filename);
+    fs.unlink(oldFilePath, (unlinkError) => {
+      if (unlinkError) console.error('Error deleting old file:', unlinkError);
+    });
+
+    // Invalidate artworks cache
+    invalidateCache('artworks');
+
+    res.json(createResponse(true, {
+      ...updatedImageResult.rows[0],
+      publicUrl: `${process.env.BACKEND_URL || ''}${updatedImageResult.rows[0].url}`
+    }, 'Image updated successfully'));
+  } catch (error) {
+    console.error('Error updating image:', error);
+    
+    // Clean up uploaded file on error
+    if (req.file) {
+      fs.unlink(req.file.path, (unlinkError) => {
+        if (unlinkError) console.error('Error deleting file:', unlinkError);
+      });
+    }
+    
+    res.status(500).json(createResponse(false, null, '', 'Failed to update image'));
   }
 });
 
