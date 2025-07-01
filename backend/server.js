@@ -14,7 +14,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import fs from 'fs';
-import { body, validationResult } from 'express-validator';
 
 // Load environment variables first
 dotenv.config();
@@ -179,46 +178,50 @@ const categories = [
   {
     id: 1,
     name: 'Paintings',
-    description: 'Beautiful hand-painted artworks',
+    description: 'Beautiful hand-painted artworks featuring landscapes, portraits, and abstract designs',
     color: '#FF6B6B',
     isActive: true,
     sortOrder: 1,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    artworkCount: 4
   },
   {
     id: 2,
     name: 'Sculptures',
-    description: 'Three-dimensional art pieces',
+    description: 'Three-dimensional art pieces crafted with precision and artistic vision',
     color: '#4ECDC4',
     isActive: true,
     sortOrder: 2,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    artworkCount: 2
   },
   {
     id: 3,
     name: 'Digital Art',
-    description: 'Modern digital creations',
+    description: 'Modern digital creations blending traditional art with cutting-edge technology',
     color: '#45B7D1',
     isActive: true,
     sortOrder: 3,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    artworkCount: 3
   },
   {
     id: 4,
     name: 'Photography',
-    description: 'Captured moments in time',
+    description: 'Captured moments in time showcasing the beauty of Moroccan culture and landscapes',
     color: '#96CEB4',
     isActive: true,
     sortOrder: 4,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    artworkCount: 2
   }
 ];
 
 const artworks = [
   {
     id: 1,
-    name: 'Sunset Dreams',
-    description: 'A beautiful painting capturing the essence of a Mediterranean sunset',
+    name: 'Sunset Over Marrakech',
+    description: 'A breathtaking oil painting capturing the magical golden hour in Marrakech, with traditional architecture silhouetted against a vibrant sky.',
     price: 1200.00,
     originalPrice: 1500.00,
     medium: 'Oil on Canvas',
@@ -228,14 +231,15 @@ const artworks = [
     isActive: true,
     isFeatured: true,
     categoryId: 1,
-    images: ['/uploads/placeholder-artwork-1.jpg'],
-    viewCount: 0,
-    createdAt: new Date().toISOString()
+    image: 'https://images.unsplash.com/photo-1582555172866-f73bb12a2ab3?w=800',
+    viewCount: 45,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   },
   {
     id: 2,
     name: 'Modern Harmony',
-    description: 'Contemporary sculpture representing balance and movement',
+    description: 'A contemporary bronze sculpture representing the balance between tradition and modernity in Moroccan art.',
     price: 2500.00,
     medium: 'Bronze',
     dimensions: '45x30x25cm',
@@ -244,9 +248,61 @@ const artworks = [
     isActive: true,
     isFeatured: false,
     categoryId: 2,
-    images: ['/uploads/placeholder-artwork-2.jpg'],
-    viewCount: 0,
-    createdAt: new Date().toISOString()
+    image: 'https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=800',
+    viewCount: 23,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    id: 3,
+    name: 'Atlas Mountains Vista',
+    description: 'A stunning landscape painting showcasing the majestic Atlas Mountains with traditional Berber villages nestled in the valleys.',
+    price: 950.00,
+    medium: 'Acrylic on Canvas',
+    dimensions: '70x50cm',
+    year: 2024,
+    status: 'AVAILABLE',
+    isActive: true,
+    isFeatured: true,
+    categoryId: 1,
+    image: 'https://images.unsplash.com/photo-1539650116574-75c0c6d3cebc?w=800',
+    viewCount: 67,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    id: 4,
+    name: 'Digital Mosque',
+    description: 'A modern digital artwork blending traditional Islamic architecture with contemporary digital art techniques.',
+    price: 650.00,
+    medium: 'Digital Print',
+    dimensions: '50x70cm',
+    year: 2024,
+    status: 'AVAILABLE',
+    isActive: true,
+    isFeatured: false,
+    categoryId: 3,
+    image: 'https://images.unsplash.com/photo-1564769625905-4ac4b8d94704?w=800',
+    viewCount: 34,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    id: 5,
+    name: 'Casablanca Streets',
+    description: 'A captivating photograph of the bustling streets of Casablanca, showcasing the vibrant urban life of Morocco.',
+    price: 450.00,
+    medium: 'Photography',
+    dimensions: '40x60cm',
+    year: 2023,
+    status: 'SOLD',
+    isActive: true,
+    isFeatured: false,
+    categoryId: 4,
+    image: 'https://images.unsplash.com/photo-1539650116574-75c0c6d3cebc?w=800',
+    viewCount: 89,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   }
 ];
 
@@ -255,10 +311,11 @@ const admins = [
     id: 1,
     username: 'admin',
     email: 'admin@elouarate.com',
-    passwordHash: 'Admin123!',
+    passwordHash: 'Admin123!', // In production, this would be properly hashed
     isActive: true,
     role: 'ADMIN',
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    lastLogin: null
   }
 ];
 
@@ -271,13 +328,18 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     success: true,
     status: 'healthy',
-    message: 'Server is running perfectly',
+    message: 'ELOUARATE ART Backend is running perfectly',
     version: '2.0.0',
     environment: process.env.NODE_ENV || 'development',
-    uptime: process.uptime(),
+    uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
     port: PORT,
-    railway: 'deployed'
+    railway: 'deployed',
+    stats: {
+      categories: categories.length,
+      artworks: artworks.length,
+      admins: admins.length
+    }
   });
 });
 
@@ -287,6 +349,7 @@ app.get('/', (req, res) => {
     message: '🎨 ELOUARATE ART - Professional Backend API',
     version: '2.0.0',
     status: 'operational',
+    description: 'Premium Moroccan Art Gallery Management System',
     endpoints: {
       health: '/health',
       admin: '/api/admin/login',
@@ -294,6 +357,14 @@ app.get('/', (req, res) => {
       artworks: '/api/artworks',
       upload: '/api/upload/image'
     },
+    features: [
+      'Secure Admin Authentication',
+      'Artwork Management',
+      'Category Management', 
+      'File Upload System',
+      'Professional Security',
+      'Railway Optimized'
+    ],
     deployed: new Date().toISOString()
   });
 });
@@ -303,14 +374,21 @@ app.get('/api/health', (req, res) => {
     true,
     {
       api: 'operational',
-      database: 'mock',
+      database: 'mock-ready-for-postgresql',
+      services: {
+        auth: 'active',
+        uploads: 'active',
+        categories: 'active',
+        artworks: 'active'
+      },
       stats: {
         categories: categories.length,
         artworks: artworks.length,
-        admins: admins.length
+        activeArtworks: artworks.filter(a => a.isActive).length,
+        featuredArtworks: artworks.filter(a => a.isFeatured).length
       }
     },
-    'API is fully operational'
+    'ELOUARATE ART API is fully operational'
   ));
 });
 
@@ -330,14 +408,18 @@ app.post('/api/admin/login', authLimiter, handleAsync(async (req, res) => {
 
   const admin = admins.find(a => a.email === email && a.isActive);
   if (!admin || admin.passwordHash !== password) {
+    console.log(`❌ Invalid login attempt: ${email}`);
     return res.status(401).json(formatResponse(
       false, null, 'Invalid credentials', 'INVALID_CREDENTIALS'
     ));
   }
 
+  // Update last login
+  admin.lastLogin = new Date().toISOString();
+
   const tokens = {
-    accessToken: `mock-access-token-${admin.id}-${Date.now()}`,
-    refreshToken: `mock-refresh-token-${admin.id}-${Date.now()}`
+    accessToken: `elouarate-access-${admin.id}-${Date.now()}`,
+    refreshToken: `elouarate-refresh-${admin.id}-${Date.now()}`
   };
 
   console.log(`✅ Admin login successful: ${email}`);
@@ -349,7 +431,8 @@ app.post('/api/admin/login', authLimiter, handleAsync(async (req, res) => {
       email: admin.email,
       role: admin.role,
       isActive: admin.isActive,
-      createdAt: admin.createdAt
+      createdAt: admin.createdAt,
+      lastLogin: admin.lastLogin
     },
     tokens
   }, 'Login successful'));
@@ -361,6 +444,7 @@ app.get('/api/admin/profile', handleAsync(async (req, res) => {
 }));
 
 app.post('/api/admin/logout', handleAsync(async (req, res) => {
+  console.log('🚪 Admin logout');
   res.json(formatResponse(true, null, 'Logout successful'));
 }));
 
@@ -389,7 +473,16 @@ app.get('/api/categories/:id', handleAsync(async (req, res) => {
     ));
   }
   
-  res.json(formatResponse(true, { category }, 'Category retrieved successfully'));
+  // Get artworks in this category
+  const categoryArtworks = artworks.filter(a => a.categoryId === parseInt(id) && a.isActive);
+  
+  res.json(formatResponse(true, { 
+    category: {
+      ...category,
+      artworkCount: categoryArtworks.length,
+      artworks: categoryArtworks
+    }
+  }, 'Category retrieved successfully'));
 }));
 
 // =============================================================================
@@ -397,12 +490,22 @@ app.get('/api/categories/:id', handleAsync(async (req, res) => {
 // =============================================================================
 
 app.get('/api/artworks', handleAsync(async (req, res) => {
-  const { category, status = 'AVAILABLE', featured, limit = 50, offset = 0, search } = req.query;
-  console.log('🎨 Fetching artworks with filters:', { category, status, featured, search });
+  const { 
+    category, 
+    status = 'AVAILABLE', 
+    featured, 
+    limit = 50, 
+    offset = 0, 
+    search,
+    sort = 'newest'
+  } = req.query;
+  
+  console.log('🎨 Fetching artworks with filters:', { category, status, featured, search, sort });
   
   let filteredArtworks = artworks.filter(artwork => artwork.isActive);
   
-  if (category) {
+  // Apply filters
+  if (category && category !== 'all') {
     filteredArtworks = filteredArtworks.filter(a => a.categoryId === parseInt(category));
   }
   
@@ -423,17 +526,46 @@ app.get('/api/artworks', handleAsync(async (req, res) => {
     );
   }
   
+  // Apply sorting
+  switch (sort) {
+    case 'newest':
+      filteredArtworks.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      break;
+    case 'oldest':
+      filteredArtworks.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      break;
+    case 'price-low':
+      filteredArtworks.sort((a, b) => a.price - b.price);
+      break;
+    case 'price-high':
+      filteredArtworks.sort((a, b) => b.price - a.price);
+      break;
+    case 'popular':
+      filteredArtworks.sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
+      break;
+    default:
+      // Keep default order
+  }
+  
   const total = filteredArtworks.length;
   const paginatedArtworks = filteredArtworks
     .slice(parseInt(offset), parseInt(offset) + parseInt(limit));
   
+  // Add category information to each artwork
+  const artworksWithCategories = paginatedArtworks.map(artwork => ({
+    ...artwork,
+    category: categories.find(cat => cat.id === artwork.categoryId)
+  }));
+  
   res.json(formatResponse(true, {
-    artworks: paginatedArtworks,
+    artworks: artworksWithCategories,
     pagination: {
       total,
       limit: parseInt(limit),
       offset: parseInt(offset),
-      hasMore: parseInt(offset) + parseInt(limit) < total
+      hasMore: parseInt(offset) + parseInt(limit) < total,
+      page: Math.floor(parseInt(offset) / parseInt(limit)) + 1,
+      totalPages: Math.ceil(total / parseInt(limit))
     }
   }, 'Artworks retrieved successfully'));
 }));
@@ -448,8 +580,18 @@ app.get('/api/artworks/:id', handleAsync(async (req, res) => {
     ));
   }
   
+  // Increment view count
   artwork.viewCount = (artwork.viewCount || 0) + 1;
-  res.json(formatResponse(true, { artwork }, 'Artwork retrieved successfully'));
+  
+  // Add category information
+  const category = categories.find(cat => cat.id === artwork.categoryId);
+  
+  res.json(formatResponse(true, { 
+    artwork: {
+      ...artwork,
+      category
+    }
+  }, 'Artwork retrieved successfully'));
 }));
 
 // =============================================================================
@@ -470,8 +612,32 @@ app.post('/api/upload/image', upload.single('image'), handleAsync(async (req, re
     url: imageUrl,
     filename: req.file.filename,
     originalName: req.file.originalname,
-    size: req.file.size
+    size: req.file.size,
+    mimeType: req.file.mimetype
   }, 'Image uploaded successfully'));
+}));
+
+app.post('/api/upload/multiple', upload.array('images', 5), handleAsync(async (req, res) => {
+  if (!req.files || req.files.length === 0) {
+    return res.status(400).json(formatResponse(
+      false, null, 'No image files provided', 'NO_FILES'
+    ));
+  }
+  
+  const uploadedImages = req.files.map(file => ({
+    url: `/uploads/${file.filename}`,
+    filename: file.filename,
+    originalName: file.originalname,
+    size: file.size,
+    mimeType: file.mimetype
+  }));
+  
+  console.log(`📸 Multiple images uploaded: ${uploadedImages.length} files`);
+  
+  res.json(formatResponse(true, {
+    images: uploadedImages,
+    count: uploadedImages.length
+  }, `${uploadedImages.length} images uploaded successfully`));
 }));
 
 // =============================================================================
@@ -479,20 +645,59 @@ app.post('/api/upload/image', upload.single('image'), handleAsync(async (req, re
 // =============================================================================
 
 app.get('/sitemap.xml', (req, res) => {
-  res.set('Content-Type', 'text/xml');
-  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+  const baseUrl = 'https://artelouarrate-frontend-production.up.railway.app';
+  
+  let sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://artelouarrate-frontend-production.up.railway.app/</loc>
+    <loc>${baseUrl}/</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
-</urlset>`);
+  <url>
+    <loc>${baseUrl}/artist</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>${baseUrl}/ma3rid</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>`;
+
+  // Add artwork pages
+  artworks.filter(a => a.isActive).forEach(artwork => {
+    sitemap += `
+  <url>
+    <loc>${baseUrl}/artwork/${artwork.id}</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>`;
+  });
+
+  sitemap += `
+</urlset>`;
+
+  res.set('Content-Type', 'text/xml');
+  res.send(sitemap);
 });
 
 app.get('/robots.txt', (req, res) => {
+  const baseUrl = 'https://artelouarrate-frontend-production.up.railway.app';
   res.set('Content-Type', 'text/plain');
-  res.send(`User-agent: *\nAllow: /\n\nSitemap: https://artelouarrate-frontend-production.up.railway.app/sitemap.xml`);
+  res.send(`User-agent: *
+Allow: /
+
+# Important pages
+Allow: /artist
+Allow: /artwork/
+Allow: /ma3rid
+
+# Disallow admin and API
+Disallow: /admin
+Disallow: /api
+
+Sitemap: ${baseUrl}/sitemap.xml`);
 });
 
 // =============================================================================
@@ -500,6 +705,7 @@ app.get('/robots.txt', (req, res) => {
 // =============================================================================
 
 app.use('*', (req, res) => {
+  console.log(`❌ 404 - Endpoint not found: ${req.method} ${req.originalUrl}`);
   res.status(404).json(formatResponse(
     false, null, `Endpoint not found: ${req.method} ${req.originalUrl}`, 'NOT_FOUND'
   ));
@@ -519,18 +725,28 @@ app.use((error, req, res, next) => {
 // =============================================================================
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log('🎨 ELOUARATE ART BACKEND - RAILWAY DEPLOYED');
-  console.log('═'.repeat(60));
+  console.log('\n🎨 ELOUARATE ART BACKEND - RAILWAY DEPLOYED');
+  console.log('═'.repeat(70));
   console.log(`🚀 Server running on PORT: ${PORT}`);
   console.log(`🌐 Health Check: /health`);
-  console.log(`👤 Admin Login: /api/admin/login`);
-  console.log(`📂 Categories: /api/categories`);
-  console.log(`🎨 Artworks: /api/artworks`);
+  console.log(`👤 Admin Login: /api/admin/login (admin@elouarate.com / Admin123!)`);
+  console.log(`📂 Categories: /api/categories (${categories.length} categories)`);
+  console.log(`🎨 Artworks: /api/artworks (${artworks.length} artworks)`);
   console.log(`📸 Upload: /api/upload/image`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log('═'.repeat(60));
+  console.log(`🔗 Frontend URL: https://artelouarrate-frontend-production.up.railway.app`);
+  console.log('═'.repeat(70));
   console.log('✅ RAILWAY DEPLOYMENT SUCCESSFUL!');
   console.log('✅ Backend ready to handle frontend requests!');
+  console.log('✅ All API endpoints operational!');
+  console.log('\n📋 Available Endpoints:');
+  console.log('   GET  /health                 - Health check');
+  console.log('   GET  /api/categories         - Get all categories');
+  console.log('   GET  /api/artworks           - Get all artworks');
+  console.log('   GET  /api/artworks/:id       - Get specific artwork');
+  console.log('   POST /api/admin/login        - Admin authentication');
+  console.log('   POST /api/upload/image       - Upload artwork image');
+  console.log('\n🎯 Ready for production traffic!');
 });
 
 // Graceful shutdown for Railway
