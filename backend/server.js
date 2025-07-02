@@ -473,16 +473,124 @@ app.get('/api/categories/:id', handleAsync(async (req, res) => {
     ));
   }
   
-  // Get artworks in this category
-  const categoryArtworks = artworks.filter(a => a.categoryId === parseInt(id) && a.isActive);
+  // Add artwork count for this category
+  const artworkCount = artworks.filter(art => art.categoryId === category.id && art.isActive).length;
   
   res.json(formatResponse(true, { 
     category: {
       ...category,
-      artworkCount: categoryArtworks.length,
-      artworks: categoryArtworks
+      artworkCount
     }
   }, 'Category retrieved successfully'));
+}));
+
+// POST /api/categories - Create new category
+app.post('/api/categories', handleAsync(async (req, res) => {
+  const { name, description, color } = req.body;
+  
+  if (!name || !description) {
+    return res.status(400).json(formatResponse(
+      false, null, 'Category name and description are required', 'VALIDATION_ERROR'
+    ));
+  }
+  
+  // Check if category already exists
+  const existingCategory = categories.find(cat => 
+    cat.name.toLowerCase() === name.toLowerCase() && cat.isActive
+  );
+  
+  if (existingCategory) {
+    return res.status(409).json(formatResponse(
+      false, null, 'Category with this name already exists', 'CATEGORY_EXISTS'
+    ));
+  }
+  
+  const newCategory = {
+    id: Math.max(...categories.map(c => c.id), 0) + 1,
+    name,
+    description,
+    color: color || '#667eea',
+    isActive: true,
+    sortOrder: categories.length + 1,
+    createdAt: new Date().toISOString(),
+    artworkCount: 0
+  };
+  
+  categories.push(newCategory);
+  console.log(`✅ Category created: ${name}`);
+  
+  res.status(201).json(formatResponse(true, { category: newCategory }, 'Category created successfully'));
+}));
+
+// PUT /api/categories/:id - Update category
+app.put('/api/categories/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  const { name, description, color, isActive } = req.body;
+  
+  const categoryIndex = categories.findIndex(cat => cat.id === parseInt(id));
+  
+  if (categoryIndex === -1) {
+    return res.status(404).json(formatResponse(
+      false, null, 'Category not found', 'CATEGORY_NOT_FOUND'
+    ));
+  }
+  
+  // Check if another category has the same name
+  if (name) {
+    const existingCategory = categories.find(cat => 
+      cat.name.toLowerCase() === name.toLowerCase() && 
+      cat.id !== parseInt(id) && 
+      cat.isActive
+    );
+    
+    if (existingCategory) {
+      return res.status(409).json(formatResponse(
+        false, null, 'Another category with this name already exists', 'CATEGORY_EXISTS'
+      ));
+    }
+  }
+  
+  const updatedCategory = {
+    ...categories[categoryIndex],
+    ...(name && { name }),
+    ...(description && { description }),
+    ...(color && { color }),
+    ...(isActive !== undefined && { isActive }),
+    updatedAt: new Date().toISOString()
+  };
+  
+  categories[categoryIndex] = updatedCategory;
+  console.log(`✅ Category updated: ${updatedCategory.name}`);
+  
+  res.json(formatResponse(true, { category: updatedCategory }, 'Category updated successfully'));
+}));
+
+// DELETE /api/categories/:id - Delete category
+app.delete('/api/categories/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  
+  const categoryIndex = categories.findIndex(cat => cat.id === parseInt(id));
+  
+  if (categoryIndex === -1) {
+    return res.status(404).json(formatResponse(
+      false, null, 'Category not found', 'CATEGORY_NOT_FOUND'
+    ));
+  }
+  
+  // Check if category has artworks
+  const categoryArtworks = artworks.filter(art => art.categoryId === parseInt(id) && art.isActive);
+  
+  if (categoryArtworks.length > 0) {
+    return res.status(409).json(formatResponse(
+      false, null, `Cannot delete category. It has ${categoryArtworks.length} artwork(s)`, 'CATEGORY_HAS_ARTWORKS'
+    ));
+  }
+  
+  const deletedCategory = categories[categoryIndex];
+  categories.splice(categoryIndex, 1);
+  console.log(`✅ Category deleted: ${deletedCategory.name}`);
+  
+  res.json(formatResponse(true, { category: deletedCategory }, 'Category deleted successfully'));
 }));
 
 // =============================================================================
@@ -592,6 +700,337 @@ app.get('/api/artworks/:id', handleAsync(async (req, res) => {
       category
     }
   }, 'Artwork retrieved successfully'));
+}));
+
+// POST /api/artworks - Create new artwork
+app.post('/api/artworks', handleAsync(async (req, res) => {
+  const { 
+    name, description, price, originalPrice, medium, dimensions, 
+    year, categoryId, image, status, isFeatured 
+  } = req.body;
+  
+  if (!name || !description || !price || !categoryId) {
+    return res.status(400).json(formatResponse(
+      false, null, 'Name, description, price, and category are required', 'VALIDATION_ERROR'
+    ));
+  }
+  
+  // Check if category exists
+  const category = categories.find(cat => cat.id === parseInt(categoryId) && cat.isActive);
+  if (!category) {
+    return res.status(400).json(formatResponse(
+      false, null, 'Invalid category ID', 'INVALID_CATEGORY'
+    ));
+  }
+  
+  const newArtwork = {
+    id: Math.max(...artworks.map(a => a.id), 0) + 1,
+    name,
+    description,
+    price: parseFloat(price),
+    originalPrice: originalPrice ? parseFloat(originalPrice) : null,
+    medium: medium || '',
+    dimensions: dimensions || '',
+    year: year || new Date().getFullYear(),
+    status: status || 'AVAILABLE',
+    isActive: true,
+    isFeatured: isFeatured || false,
+    categoryId: parseInt(categoryId),
+    image: image || 'https://images.unsplash.com/photo-1578662996442-48f60103fc96?w=800',
+    viewCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  artworks.push(newArtwork);
+  console.log(`✅ Artwork created: ${name}`);
+  
+  res.status(201).json(formatResponse(true, { artwork: newArtwork }, 'Artwork created successfully'));
+}));
+
+// PUT /api/artworks/:id - Update artwork
+app.put('/api/artworks/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  const { 
+    name, description, price, originalPrice, medium, dimensions, 
+    year, categoryId, image, status, isFeatured, isActive 
+  } = req.body;
+  
+  const artworkIndex = artworks.findIndex(art => art.id === parseInt(id));
+  
+  if (artworkIndex === -1) {
+    return res.status(404).json(formatResponse(
+      false, null, 'Artwork not found', 'ARTWORK_NOT_FOUND'
+    ));
+  }
+  
+  // Check if category exists (if provided)
+  if (categoryId) {
+    const category = categories.find(cat => cat.id === parseInt(categoryId) && cat.isActive);
+    if (!category) {
+      return res.status(400).json(formatResponse(
+        false, null, 'Invalid category ID', 'INVALID_CATEGORY'
+      ));
+    }
+  }
+  
+  const updatedArtwork = {
+    ...artworks[artworkIndex],
+    ...(name && { name }),
+    ...(description && { description }),
+    ...(price && { price: parseFloat(price) }),
+    ...(originalPrice !== undefined && { originalPrice: originalPrice ? parseFloat(originalPrice) : null }),
+    ...(medium && { medium }),
+    ...(dimensions && { dimensions }),
+    ...(year && { year }),
+    ...(categoryId && { categoryId: parseInt(categoryId) }),
+    ...(image && { image }),
+    ...(status && { status }),
+    ...(isFeatured !== undefined && { isFeatured }),
+    ...(isActive !== undefined && { isActive }),
+    updatedAt: new Date().toISOString()
+  };
+  
+  artworks[artworkIndex] = updatedArtwork;
+  console.log(`✅ Artwork updated: ${updatedArtwork.name}`);
+  
+  res.json(formatResponse(true, { artwork: updatedArtwork }, 'Artwork updated successfully'));
+}));
+
+// DELETE /api/artworks/:id - Delete artwork
+app.delete('/api/artworks/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  
+  const artworkIndex = artworks.findIndex(art => art.id === parseInt(id));
+  
+  if (artworkIndex === -1) {
+    return res.status(404).json(formatResponse(
+      false, null, 'Artwork not found', 'ARTWORK_NOT_FOUND'
+    ));
+  }
+  
+  const deletedArtwork = artworks[artworkIndex];
+  artworks.splice(artworkIndex, 1);
+  console.log(`✅ Artwork deleted: ${deletedArtwork.name}`);
+  
+  res.json(formatResponse(true, { artwork: deletedArtwork }, 'Artwork deleted successfully'));
+}));
+
+// =============================================================================
+// USERS API
+// =============================================================================
+
+// Mock users data for demo
+const users = [
+  {
+    id: '1',
+    firstName: 'Ahmed',
+    lastName: 'Benali',
+    email: 'ahmed.benali@example.com',
+    phone: '+212-661-234567',
+    dateOfBirth: '1990-05-15',
+    isActive: true,
+    isEmailVerified: true,
+    lastLogin: new Date().toISOString(),
+    createdAt: '2024-01-15T10:00:00.000Z',
+    updatedAt: new Date().toISOString()
+  },
+  {
+    id: '2',
+    firstName: 'Fatima',
+    lastName: 'El Idrissi',
+    email: 'fatima.elidrissi@example.com',
+    phone: '+212-662-345678',
+    dateOfBirth: '1985-08-22',
+    isActive: true,
+    isEmailVerified: true,
+    lastLogin: '2024-01-20T14:30:00.000Z',
+    createdAt: '2024-01-10T09:15:00.000Z',
+    updatedAt: '2024-01-20T14:30:00.000Z'
+  },
+  {
+    id: '3',
+    firstName: 'Omar',
+    lastName: 'Alami',
+    email: 'omar.alami@example.com',
+    phone: '+212-663-456789',
+    isActive: false,
+    isEmailVerified: false,
+    lastLogin: null,
+    createdAt: '2024-01-05T16:45:00.000Z',
+    updatedAt: '2024-01-05T16:45:00.000Z'
+  },
+  {
+    id: '4',
+    firstName: 'Aicha',
+    lastName: 'Mansouri',
+    email: 'aicha.mansouri@example.com',
+    phone: '+212-664-567890',
+    dateOfBirth: '1992-12-03',
+    isActive: true,
+    isEmailVerified: true,
+    lastLogin: '2024-01-18T11:20:00.000Z',
+    createdAt: '2024-01-12T13:30:00.000Z',
+    updatedAt: '2024-01-18T11:20:00.000Z'
+  }
+];
+
+// GET /api/users - Get all users
+app.get('/api/users', handleAsync(async (req, res) => {
+  const { page = 1, limit = 50, search, status } = req.query;
+  
+  let filteredUsers = users;
+  
+  // Apply search filter
+  if (search) {
+    const searchTerm = search.toString().toLowerCase();
+    filteredUsers = filteredUsers.filter(user => 
+      user.firstName.toLowerCase().includes(searchTerm) ||
+      user.lastName.toLowerCase().includes(searchTerm) ||
+      user.email.toLowerCase().includes(searchTerm)
+    );
+  }
+  
+  // Apply status filter
+  if (status) {
+    filteredUsers = filteredUsers.filter(user => {
+      if (status === 'active') return user.isActive;
+      if (status === 'inactive') return !user.isActive;
+      return true;
+    });
+  }
+  
+  const startIndex = (parseInt(page.toString()) - 1) * parseInt(limit.toString());
+  const endIndex = startIndex + parseInt(limit.toString());
+  const paginatedUsers = filteredUsers.slice(startIndex, endIndex);
+  
+  console.log(`👥 Users retrieved: ${paginatedUsers.length}/${filteredUsers.length} total`);
+  
+  res.json(formatResponse(true, {
+    users: paginatedUsers,
+    pagination: {
+      page: parseInt(page.toString()),
+      limit: parseInt(limit.toString()),
+      total: filteredUsers.length,
+      totalPages: Math.ceil(filteredUsers.length / parseInt(limit.toString()))
+    }
+  }, 'Users retrieved successfully'));
+}));
+
+// GET /api/users/:id - Get specific user
+app.get('/api/users/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  const user = users.find(u => u.id === id);
+  
+  if (!user) {
+    return res.status(404).json(formatResponse(
+      false, null, 'User not found', 'USER_NOT_FOUND'
+    ));
+  }
+  
+  res.json(formatResponse(true, { user }, 'User retrieved successfully'));
+}));
+
+// POST /api/users - Create new user
+app.post('/api/users', handleAsync(async (req, res) => {
+  const { firstName, lastName, email, phone, dateOfBirth } = req.body;
+  
+  if (!firstName || !lastName || !email) {
+    return res.status(400).json(formatResponse(
+      false, null, 'First name, last name, and email are required', 'VALIDATION_ERROR'
+    ));
+  }
+  
+  // Check if user already exists
+  const existingUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  
+  if (existingUser) {
+    return res.status(409).json(formatResponse(
+      false, null, 'User with this email already exists', 'USER_EXISTS'
+    ));
+  }
+  
+  const newUser = {
+    id: (Math.max(...users.map(u => parseInt(u.id)), 0) + 1).toString(),
+    firstName,
+    lastName,
+    email,
+    phone: phone || null,
+    dateOfBirth: dateOfBirth || null,
+    isActive: true,
+    isEmailVerified: false,
+    lastLogin: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  users.push(newUser);
+  console.log(`✅ User created: ${firstName} ${lastName}`);
+  
+  res.status(201).json(formatResponse(true, { user: newUser }, 'User created successfully'));
+}));
+
+// PUT /api/users/:id - Update user
+app.put('/api/users/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  const { firstName, lastName, email, phone, dateOfBirth, isActive, isEmailVerified } = req.body;
+  
+  const userIndex = users.findIndex(u => u.id === id);
+  
+  if (userIndex === -1) {
+    return res.status(404).json(formatResponse(
+      false, null, 'User not found', 'USER_NOT_FOUND'
+    ));
+  }
+  
+  // Check if another user has the same email
+  if (email) {
+    const existingUser = users.find(u => 
+      u.email.toLowerCase() === email.toLowerCase() && u.id !== id
+    );
+    
+    if (existingUser) {
+      return res.status(409).json(formatResponse(
+        false, null, 'Another user with this email already exists', 'USER_EXISTS'
+      ));
+    }
+  }
+  
+  const updatedUser = {
+    ...users[userIndex],
+    ...(firstName && { firstName }),
+    ...(lastName && { lastName }),
+    ...(email && { email }),
+    ...(phone !== undefined && { phone }),
+    ...(dateOfBirth !== undefined && { dateOfBirth }),
+    ...(isActive !== undefined && { isActive }),
+    ...(isEmailVerified !== undefined && { isEmailVerified }),
+    updatedAt: new Date().toISOString()
+  };
+  
+  users[userIndex] = updatedUser;
+  console.log(`✅ User updated: ${updatedUser.firstName} ${updatedUser.lastName}`);
+  
+  res.json(formatResponse(true, { user: updatedUser }, 'User updated successfully'));
+}));
+
+// DELETE /api/users/:id - Delete user
+app.delete('/api/users/:id', handleAsync(async (req, res) => {
+  const { id } = req.params;
+  
+  const userIndex = users.findIndex(u => u.id === id);
+  
+  if (userIndex === -1) {
+    return res.status(404).json(formatResponse(
+      false, null, 'User not found', 'USER_NOT_FOUND'
+    ));
+  }
+  
+  const deletedUser = users[userIndex];
+  users.splice(userIndex, 1);
+  console.log(`✅ User deleted: ${deletedUser.firstName} ${deletedUser.lastName}`);
+  
+  res.json(formatResponse(true, { user: deletedUser }, 'User deleted successfully'));
 }));
 
 // =============================================================================
